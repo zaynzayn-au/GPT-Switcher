@@ -33,9 +33,21 @@ struct MenuContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.isSwitching)
+                .disabled(model.isSwitching || model.isRefreshingUsage)
             }
 
+            if model.pendingLoginProfileID != nil {
+                Button("取消登录并回到共享工作区", action: model.cancelLoginSetup)
+                    .disabled(model.isSwitching || model.isRefreshingUsage)
+            }
+            if model.configuredAccounts.isEmpty && model.pendingLoginProfileID == nil {
+                Button("将当前 Codex 登录保存为 Account A", action: model.adoptCurrentAccount)
+                    .disabled(model.isSwitching || model.isRefreshingUsage)
+            }
+            if let updated = model.lastUsageRefresh {
+                Text("上次查询：" + updated.formatted(.dateTime.hour().minute()))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             Divider()
 
             VStack(spacing: 6) {
@@ -44,7 +56,7 @@ struct MenuContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isSwitching)
+                .disabled(model.isSwitching || model.isRefreshingUsage || model.pendingLoginProfileID != nil)
 
                 Button {
                     model.refreshUsageIfNeeded(force: true)
@@ -57,7 +69,7 @@ struct MenuContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.configuredAccounts.isEmpty || model.isRefreshingUsage)
+                .disabled(model.configuredAccounts.isEmpty || model.isRefreshingUsage || model.isSwitching || model.pendingLoginProfileID != nil)
                 .accessibilityHint("读取所有已登录账号的最新额度和重置时间")
 
                 Button(action: model.openChatGPT) {
@@ -65,7 +77,7 @@ struct MenuContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.configuredAccounts.isEmpty || model.isSwitching)
+                .disabled(model.configuredAccounts.isEmpty || model.isSwitching || model.isRefreshingUsage || model.pendingLoginProfileID != nil)
 
                 SettingsLink {
                     Label("账号管理与设置", systemImage: "gearshape")
@@ -102,6 +114,7 @@ struct MenuContentView: View {
     }
 
     private var currentStatus: String {
+        if let id = model.pendingLoginProfileID { return "正在登录：" + model.account(id).displayName }
         if let active = model.activeAccount {
             return "当前：\(active.displayName)" + (model.isChatGPTRunning ? "" : "（未运行）")
         }
@@ -119,7 +132,7 @@ struct MenuContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.isSwitching)
+                    .disabled(model.isSwitching || model.isRefreshingUsage)
                 } else if account.isConfigured && model.hasCredential(account.id) {
                     Button {
                         model.switchTo(account.id)
@@ -151,7 +164,8 @@ struct MenuContentView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.vertical, 5)
-                    .disabled(model.isSwitching)
+                    .disabled(model.isSwitching || model.isRefreshingUsage)
+                    .disabled(model.pendingLoginProfileID != nil)
                     .accessibilityLabel("切换到 \(account.displayName)")
                     .accessibilityValue(usageAccessibilityValue(account.id))
                     .accessibilityHint("切换模型账号，本地项目和历史保持不变")
@@ -163,7 +177,7 @@ struct MenuContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.isSwitching)
+                    .disabled(model.isSwitching || model.isRefreshingUsage)
                 }
             }
         }

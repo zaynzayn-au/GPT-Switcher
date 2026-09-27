@@ -1,16 +1,17 @@
-# Security model
+# Security model — local hardening 1.2.2
 
-- GPT Switcher is local-only and makes no network requests of its own.
-- All accounts share the official default local workspace (`~/.codex`) and Electron data directory so projects, threads, and task history remain continuous.
-- Each account keeps an official `auth.json` snapshot in its private GPT Switcher directory. Switching performs an opaque, atomic file copy to the official active path; the app never decodes, displays, or logs credential contents.
-- Usage refresh starts the ChatGPT bundle's local Codex App Server with a private temporary `CODEX_HOME` and calls only `account/rateLimits/read`. GPT Switcher retains plan type, usage percentages, window durations, reset timestamps, and fetch time in memory; backend account IDs are discarded.
-- If the local App Server refreshes OAuth state during a usage request, the resulting official `auth.json` is copied back opaquely to that account slot before the temporary directory is deleted.
-- Passwords, browser cookies, Local Storage, Keychain items, and project/chat databases are never copied by GPT Switcher. Usage queries do not read conversations.
-- Managed directories use mode `0700`; copied auth files and configuration use mode `0600`.
-- Before the first managed activation, the pre-existing official auth file is copied once to `migration-backup/original-auth.json` for recovery.
-- Configuration and logs contain only profile IDs, display names, shortcuts, paths, lifecycle events, and preferences.
-- Account deletion is restricted to an exact, non-symlink child of the GPT Switcher profiles directory.
-- The shared official ChatGPT/Codex directories are never deletion targets.
-- Profile IDs are restricted to lowercase ASCII letters, digits, and hyphens to prevent path traversal.
-
-This model intentionally differs from GPT Switcher 1.0. Full Profile isolation prevented accounts from sharing local projects and threads. Version 1.2 isolates only the login snapshot, leaves the workspace shared, and reads rate-limit metadata through the bundled local App Server.
+- Official browser login and MFA remain with OpenAI. GPT Switcher never asks for a password, MFA seed, or OTP.
+- All managed operations share a nonblocking cross-process lock. Pending desktop enrollment is persisted in its own fresh directory; ordinary switching is blocked until completion or cancellation.
+- The official app and bundled helper must pass Apple Developer ID / OpenAI Team `2DC432GLL2` verification. Metadata or embedded strings alone do not establish trust.
+- All accounts share the official local workspace. This is not isolation between account histories.
+- Account snapshots and the initial backup are full local credentials. Managed directories are 0700 and files 0600; they are not encrypted and remain accessible to other processes with the same user permissions. Permission or path validation failure stops the operation.
+- Switching copies opaque auth files without logging contents. Before replacing shared auth, the old active marker is removed to prevent a crash from associating a new credential with the old account. Failed launches restore the exact prior shared credential when no official client is running.
+- Active-account usage queries decode only the access-token and account-ID fields in memory and pass them to the signed official helper via stdin using experimental external-token authentication. The helper receives no refresh token; no active auth file is copied or written back. An expired access token requires the official client to refresh it.
+- Inactive-account queries use a private temporary CODEX_HOME with explicit file credential storage. Rotated credentials are retained even if the rate-limit RPC fails; writeback checks the source has not changed. A conflict retains a private recovery copy and pauses queries instead of discarding possibly refreshed tokens.
+- Query subprocesses receive a restricted environment and fresh HOME/cwd. They are terminated on completion or timeout. This deliberately does not inherit custom proxy or endpoint overrides.
+- The optional `verify-accounts` diagnostic decodes only local account-ID fields in memory under the operation lock. It reports slot-level matches and missing/invalid records, never identifiers or tokens; this is not a server identity attestation.
+- Each Mac that stays in regular use should establish its own official login sessions. Copying the same auth cache to concurrently used machines can cause refresh-token conflicts, including during background usage queries. The local operation lock cannot coordinate another machine. OpenAI documents cache copying as a trusted-remote fallback, not as a durable multi-machine synchronization mechanism: [authentication](https://learn.chatgpt.com/docs/auth#fallback-authenticate-locally-and-copy-your-auth-cache), [cache maintenance](https://learn.chatgpt.com/docs/auth/ci-cd-auth#operational-rules-that-matter).
+- Rate-limit data comes through the official app server and requires network access. GPT Switcher contains no author telemetry or direct upload endpoint. This does not guarantee all behavior of the official child process.
+- Account deletion removes only the managed slot. It does not revoke server sessions or clear the shared current login or initial backup. Uninstalling the app leaves account snapshots behind.
+- Background refresh is configurable (off, 1, 5 or 15 minutes; default 5), with explicit errors and timestamps. It never consumes a rate-limit reset credit or sends a workspace-owner notification.
+- The locally built utility is ad-hoc signed, not Apple-notarized. Build provenance records the exact local source content. It is not a third-party certification or a reproducible-build proof.

@@ -42,7 +42,7 @@ public final class ConfigStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(normalized(config))
         try data.write(to: paths.configURL, options: .atomic)
-        try? FileManager.default.setAttributes(
+        try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: paths.configURL.path
         )

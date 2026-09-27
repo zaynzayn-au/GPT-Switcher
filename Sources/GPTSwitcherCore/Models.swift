@@ -97,6 +97,11 @@ public struct SwitcherConfig: Codable, Equatable, Sendable {
     public var shortcuts: [ProfileID: HotKeyConfiguration]
     public var launchAtLogin: Bool
     public var automaticallyLaunchChatGPT: Bool
+    public var usageRefreshMinutes: Int?
+    public var effectiveUsageRefreshMinutes: Int {
+        let minutes = usageRefreshMinutes ?? 5
+        return [0, 1, 5, 15].contains(minutes) ? minutes : 5
+    }
     public var preferredChatGPTPath: String?
 
     public init(
