@@ -35,7 +35,7 @@ private struct AccountsSettingsView: View {
                 Button(action: model.addAccount) {
                     Label("添加账号", systemImage: "person.badge.plus")
                 }
-                .disabled(model.isSwitching)
+                .disabled(model.isSwitching || model.isRefreshingUsage)
             }
         }
         .formStyle(.grouped)
@@ -74,9 +74,9 @@ private struct AccountSection: View {
                 Spacer()
                 Button("删除账号", role: .destructive) {
                     showingDeleteConfirmation = true
-                }
+                }.disabled(model.pendingLoginProfileID != nil)
             }
-            .disabled(model.isSwitching)
+            .disabled(model.isSwitching || model.isRefreshingUsage)
         }
         .confirmationDialog(
             "删除 \(account.displayName)？",
@@ -170,6 +170,19 @@ private struct GeneralSettingsView: View {
                     set: model.setAutomaticallyLaunch
                 ))
             }
+            Section("额度更新") {
+                Picker("后台刷新", selection: Binding(
+                    get: { model.config.effectiveUsageRefreshMinutes },
+                    set: model.setUsageRefreshMinutes
+                )) {
+                    Text("关闭（仍可手动刷新）").tag(0)
+                    Text("每分钟").tag(1)
+                    Text("每 5 分钟").tag(5)
+                    Text("每 15 分钟").tag(15)
+                }
+                Text("显示每次查询时间；失败会明确提示。休眠期间不查询，唤醒后刷新。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if let message = model.statusMessage {
                 Section("状态") { Text(message).foregroundStyle(.secondary) }
             }
@@ -195,6 +208,14 @@ private struct AdvancedSettingsView: View {
                     }
                 } else {
                     Text("未找到兼容的 ChatGPT.app").foregroundStyle(.red)
+                }
+                Picker("启动的应用", selection: Binding(
+                    get: { model.config.preferredChatGPTPath ?? "" },
+                    set: model.setPreferredApplication
+                )) {
+                    Text("自动使用当前运行版本").tag("")
+                    Text("/Applications/Codex.app").tag("/Applications/Codex.app")
+                    Text("/Applications/ChatGPT.app").tag("/Applications/ChatGPT.app")
                 }
                 Button("重新检查") { model.refreshInstallation() }
             }

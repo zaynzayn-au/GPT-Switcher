@@ -8,6 +8,7 @@ struct GPTSwitcherApplication: App {
         MenuBarExtra("GPT Switcher", systemImage: "arrow.triangle.2.circlepath.circle.fill") {
             MenuContentView(model: model)
                 .task {
+                    model.synchronizeState()
                     model.registerHotKeys()
                     model.refreshUsageIfNeeded()
                 }

@@ -1,5 +1,7 @@
 # GPT Switcher 1.2 技术验证
 
+> 本文保留 1.2 的历史验证记录，不代表 1.2.2 的全部行为。当前加固版的验证结果与限制见 [HARDENING.md](HARDENING.md)，凭据解析、刷新策略及安全边界见 [SECURITY.md](SECURITY.md)。
+
 验证日期：2026-09-03（Asia/Shanghai）
 
 ## 修正后的结论

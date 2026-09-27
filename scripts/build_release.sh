@@ -30,17 +30,28 @@ BIN_DIR="$(swift build "${BUILD_ARGS[@]}" -c release --show-bin-path)"
 rm -rf "$FINAL_APP" "$DIST/GPT Switcher.dmg" "$DIST/GPT Switcher.app.zip" "$DIST/AppIcon.iconset"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN_DIR/GPTSwitcher" "$CONTENTS/MacOS/GPTSwitcher"
-cp "$BIN_DIR/gpt-switcher" "$DIST/gpt-switcher"
+cp "$BIN_DIR/gpt-switcher" "$STAGING/gpt-switcher"
 cp "$PROJECT_ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 
 # Swift release binaries retain linker symbol records containing absolute
 # object-file paths. Strip debug symbols before signing/distribution so build
 # machine usernames and checkout locations cannot leak through the archives.
 /usr/bin/strip -S "$CONTENTS/MacOS/GPTSwitcher"
-/usr/bin/strip -S "$DIST/gpt-switcher"
+/usr/bin/strip -S "$STAGING/gpt-switcher"
 
 xcrun swift "$PROJECT_ROOT/scripts/generate_icon.swift" "$STAGING/AppIcon.iconset" "$CONTENTS/Resources/AppIcon.icns"
 rm -rf "$STAGING/AppIcon.iconset"
+
+# Record public source hashes before signing; no account files are read.
+python3 - "$PROJECT_ROOT" "$CONTENTS/Resources/BuildProvenance.json" <<'PYCODE'
+import datetime, hashlib, json, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+paths = [root / "Package.swift", root / "Resources/Info.plist", root / "scripts/build_release.sh", root / "scripts/generate_icon.swift"]
+paths += sorted((root / "Sources").rglob("*.swift"))
+manifest = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+head = subprocess.check_output(["git", "--no-optional-locks", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+pathlib.Path(sys.argv[2]).write_text(json.dumps({"built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "base_commit": head, "source_files_sha256": manifest, "note": "Local source hashes; not a reproducible-build attestation."}, indent=2))
+PYCODE
 
 xattr -cr "$APP"
 codesign --force --deep --sign - "$APP"
@@ -53,5 +64,8 @@ ditto -c -k --keepParent --norsrc "$APP" "$STAGING/GPT Switcher.app.zip"
 ditto --norsrc "$APP" "$FINAL_APP"
 cp "$STAGING/GPT Switcher.dmg" "$DIST/GPT Switcher.dmg"
 cp "$STAGING/GPT Switcher.app.zip" "$DIST/GPT Switcher.app.zip"
+# Rename atomically so a currently running CLI login retains its executable inode.
+cp "$STAGING/gpt-switcher" "$DIST/.gpt-switcher.new"
+mv "$DIST/.gpt-switcher.new" "$DIST/gpt-switcher"
 
 printf 'Built:\n  %s\n  %s\n  %s\n  %s\n' "$FINAL_APP" "$DIST/GPT Switcher.dmg" "$DIST/GPT Switcher.app.zip" "$DIST/gpt-switcher"

@@ -1,5 +1,9 @@
 # GPT Switcher
 
+> 加固版 1.2.2：修复登录中误切、跨进程竞争和额度凭据覆盖，新增 OpenAI 签名验证、独立登录暂存、后台额度刷新（默认 5 分钟，可设 1/15 分钟或关闭）。安全边界以 [SECURITY.md](SECURITY.md) 为准，验证结果见 [HARDENING.md](HARDENING.md)。
+
+当前账号可用 `gpt-switcher adopt-current account-a` 保存为 A，不退出 Codex；另一个账号可用 `gpt-switcher login account-b` 走官方浏览器登录和 MFA，保存后再手动切换。不要在正在执行重要任务时切换，切换会退出并重启 Codex。
+
 GPT Switcher 是一个完全本地运行的 macOS 菜单栏工具，用于在多个本人拥有的 ChatGPT/Codex 账号之间切换模型登录身份，同时让所有账号共享同一套 Codex 本地项目、对话与历史任务。
 
 > 1.2 的原则：账号可切换，工作区不切换；每个账号的真实额度独立显示。仅支持单个 ChatGPT 实例，不支持多账号同时运行。
@@ -19,7 +23,9 @@ GPT Switcher 是一个完全本地运行的 macOS 菜单栏工具，用于在多
 
 ## 安装
 
-要求：macOS 14 或更高版本，以及新版 `/Applications/ChatGPT.app`。
+要求：macOS 14 或更高版本，以及官方 `/Applications/Codex.app` 或兼容的 `/Applications/ChatGPT.app`。兼容性检查会验证 OpenAI 开发者签名及所需接口。
+
+仓库中的安装包为 Apple Silicon（arm64）构建；Intel Mac 需在目标机从源码构建。临时签名未经过 Apple 公证。
 
 1. 双击 [dist/GPT Switcher.dmg](dist/GPT%20Switcher.dmg)。
 2. 将 `GPT Switcher.app` 拖到“应用程序”。旧版本可以直接覆盖。
@@ -86,7 +92,7 @@ OpenAI 对 Codex 项目与聊天的说明见[官方文档](https://learn.chatgpt
 - 每个窗口的剩余百分比。
 - 按 Mac 当前时区显示的准确重置日期与时间。
 
-工具不会按套餐名称猜测窗口。某个 Pro 账号如果只返回周窗口，界面就只显示周窗口；如果返回多个独立额度桶，也会逐项显示。额度在打开菜单时自动刷新，五分钟内使用内存缓存，也可以点击“刷新账号额度”。
+工具不会按套餐名称猜测窗口。某个 Pro 账号如果只返回周窗口，界面就只显示周窗口；如果返回多个独立额度桶，也会逐项显示。后台默认每 5 分钟刷新，设置可选关闭、1、5 或 15 分钟；唤醒时刷新，也可点击“刷新账号额度”。登录或切换占用期间会延后查询。
 
 查询使用当前 ChatGPT 安装包自带的 Codex App Server `account/rateLimits/read` 只读接口。每个账号在私有临时目录中查询，不需要切换当前 Codex，也不读取对话。接口返回的后台账号 ID 不会保存或显示。
 
@@ -105,7 +111,7 @@ OpenAI 对 Codex 项目与聊天的说明见[官方文档](https://learn.chatgpt
 ~/Library/Logs/GPT Switcher/YYYY-MM-DD.log
 ```
 
-为实现“共享工作区、只换账号”，1.2 必须在这些私有目录与官方 `~/.codex/auth.json` 之间复制完整的官方登录文件。实现只做不透明的文件级原子复制：不解析、不显示、不记录其中的 Token，也不接触密码、Cookie、Keychain 或任何项目/对话数据库。目录权限为 `0700`，文件权限为 `0600`。
+为实现“共享工作区、只换账号”，1.2 必须在这些私有目录与官方 `~/.codex/auth.json` 之间复制完整的官方登录文件。实现只做不透明的文件级原子复制：切换时不解析、不显示、不记录其中的 Token（当前账号额度查询会在内存读取 access token 和 account ID，通过标准输入交给验签后的官方组件，不传 refresh token），也不接触密码、Cookie、Keychain 或任何项目/对话数据库。目录权限为 `0700`，文件权限为 `0600`。
 
 删除账号只删除 GPT Switcher 管理的账号快照和旧隔离目录，不删除共享工作区或云端账号。详细边界见 [SECURITY.md](SECURITY.md)。
 
@@ -118,11 +124,20 @@ OpenAI 对 Codex 项目与聊天的说明见[官方文档](https://learn.chatgpt
 ./dist/gpt-switcher diagnose
 ./dist/gpt-switcher usage
 ./dist/gpt-switcher usage account-a
+./dist/gpt-switcher adopt-current account-a
+./dist/gpt-switcher login account-b
+./dist/gpt-switcher login account-c
+./dist/gpt-switcher login account-d
+./dist/gpt-switcher verify-accounts
 ./dist/gpt-switcher switch account-a
 ./dist/gpt-switcher switch account-c
 ```
 
-首次登录与新增账号请使用菜单栏应用完成。
+`adopt-current` 只用于保存当前登录到空槽位。`login` 在官方浏览器中完成新账号登录及 MFA，不关闭正在运行的 Codex，且拒绝覆盖已有槽位。首次登录与新增账号也可使用菜单栏应用；菜单栏的首次登录流程会重启官方客户端。`verify-accounts` 仅比较本地账号 ID 是否重复，不输出 ID 或 Token，不等于服务端身份验证。
+
+在另一台 Mac 安装相同代码不会自动携带账号。登录快照不在仓库内；另一台机器须独立登录，或单独处理经过加密传输的登录状态迁移。不要通过 GitHub、邮件或聊天发送 `auth.json`，也不要把整个 `~/.codex` 当作账号配置包复制。
+
+两台 Mac 都要长期使用时，请在每台机器各登录一次，以获得独立会话。复制同一份登录缓存并在两端运行（包括后台额度查询）可能引起自动续期冲突，需要重新登录；本工具不提供跨设备凭据同步。详见 [SECURITY.md](SECURITY.md)。
 
 ## 卸载
 

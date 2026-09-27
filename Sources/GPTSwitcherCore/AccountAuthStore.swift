@@ -18,6 +18,12 @@ private struct ActiveAuthMarker: Codable {
     let profileID: ProfileID
 }
 
+/// An opaque, in-memory rollback checkpoint. Credential bytes are never decoded.
+public struct AccountAuthState: Sendable {
+    fileprivate let authData: Data?
+    public let profileID: ProfileID?
+}
+
 /// Moves opaque, official Codex auth files between private account slots.
 /// The contents are never decoded, inspected, or logged by GPT Switcher.
 public final class AccountAuthStore: @unchecked Sendable {
@@ -34,17 +40,46 @@ public final class AccountAuthStore: @unchecked Sendable {
     }
 
     public func activeProfileID() -> ProfileID? {
-        guard let data = try? Data(contentsOf: paths.activeAuthMarkerURL),
-              let marker = try? JSONDecoder().decode(ActiveAuthMarker.self, from: data) else {
-            return nil
-        }
-        return marker.profileID
+        try? readActiveProfileID()
+    }
+
+    public func readActiveProfileID() throws -> ProfileID? {
+        try paths.validatePrivatePath(paths.activeAuthMarkerURL)
+        guard try PrivateFileIO.exists(paths.activeAuthMarkerURL) else { return nil }
+        let data = try PrivateFileIO.read(paths.activeAuthMarkerURL, maximumSize: 4096)
+        return try JSONDecoder().decode(ActiveAuthMarker.self, from: data).profileID
     }
 
     public func preserveCurrentCredentialIfManaged() throws {
-        guard let current = activeProfileID(), isSafeCredentialFile(paths.sharedAuthURL) else { return }
-        _ = try paths.createProfileDirectories(for: current)
-        try atomicOpaqueCopy(from: paths.sharedAuthURL, to: paths.profile(current).authSnapshot)
+        guard let current = try readActiveProfileID() else { return }
+        try saveCurrentCredential(for: current)
+    }
+
+    public func saveCurrentCredential(for id: ProfileID) throws {
+        _ = try paths.createProfileDirectories(for: id)
+        try atomicOpaqueCopy(from: paths.sharedAuthURL, to: paths.profile(id).authSnapshot)
+    }
+
+    /// Explicitly adopts the current official login without replacing its file
+    /// or stopping the application. The caller authorizes the slot and holds
+    /// OperationLock; no credential contents are inspected.
+    public func adoptCurrentCredential(as id: ProfileID) throws {
+        try backupOriginalSharedCredentialIfNeeded()
+        try saveCurrentCredential(for: id)
+        try saveMarker(id)
+    }
+
+    /// Imports a newly enrolled credential from a private managed staging
+    /// directory. It never changes shared auth. The caller holds OperationLock
+    /// and must stop the official client before importing an active account.
+    public func saveCredential(from source: URL, for id: ProfileID) throws {
+        let candidate = source.standardizedFileURL
+        guard candidate.path.hasPrefix(paths.applicationSupportRoot.path + "/") else {
+            throw AccountAuthStoreError.unsafeCredentialFile
+        }
+        try paths.validatePrivatePath(candidate, includeSharedHome: false)
+        _ = try paths.createProfileDirectories(for: id)
+        try atomicOpaqueCopy(from: candidate, to: paths.profile(id).authSnapshot)
     }
 
     public func activate(_ id: ProfileID) throws {
@@ -53,34 +88,80 @@ public final class AccountAuthStore: @unchecked Sendable {
             throw AccountAuthStoreError.missingCredential(id)
         }
         try paths.createSupportDirectories()
-        try fileManager.createDirectory(
-            at: paths.sharedCodexHome,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try paths.createSharedCodexDirectory()
         try backupOriginalSharedCredentialIfNeeded()
+        // A crash between replacing auth and writing the marker must never
+        // associate the new credential with the previously active account.
+        try clearActiveMarker()
         try atomicOpaqueCopy(from: source, to: paths.sharedAuthURL)
         try saveMarker(id)
     }
 
     public func removeMarkerIfActive(_ id: ProfileID) {
         guard activeProfileID() == id else { return }
-        try? fileManager.removeItem(at: paths.activeAuthMarkerURL)
+        try? clearActiveMarker()
     }
 
-    private func backupOriginalSharedCredentialIfNeeded() throws {
-        guard !fileManager.fileExists(atPath: paths.originalSharedAuthBackupURL.path),
-              isSafeCredentialFile(paths.sharedAuthURL) else { return }
+    public func clearActiveMarker() throws {
+        try paths.validatePrivatePath(paths.activeAuthMarkerURL)
+        guard try PrivateFileIO.exists(paths.activeAuthMarkerURL) else { return }
+        try fileManager.removeItem(at: paths.activeAuthMarkerURL)
+    }
+
+    public func backupOriginalSharedCredentialIfNeeded() throws {
+        try paths.createSupportDirectories()
+        try paths.validatePrivatePath(paths.originalSharedAuthBackupURL)
+        try paths.validatePrivatePath(paths.sharedAuthURL)
+        if try PrivateFileIO.exists(paths.originalSharedAuthBackupURL) {
+            guard isSafeCredentialFile(paths.originalSharedAuthBackupURL) else {
+                throw AccountAuthStoreError.unsafeCredentialFile
+            }
+            return
+        }
+        guard try PrivateFileIO.exists(paths.sharedAuthURL) else { return }
         try atomicOpaqueCopy(from: paths.sharedAuthURL, to: paths.originalSharedAuthBackupURL)
+    }
+
+    public func captureCurrentState() throws -> AccountAuthState {
+        try paths.validatePrivatePath(paths.sharedAuthURL)
+        let data = try PrivateFileIO.exists(paths.sharedAuthURL) ? PrivateFileIO.read(paths.sharedAuthURL) : nil
+        return AccountAuthState(authData: data, profileID: try readActiveProfileID())
+    }
+
+    /// Call only while the official client is stopped and OperationLock is held.
+    public func restoreCurrentState(_ state: AccountAuthState) throws {
+        try paths.createSupportDirectories()
+        try paths.createSharedCodexDirectory()
+        try paths.validatePrivatePath(paths.sharedAuthURL)
+        try clearActiveMarker()
+        if let data = state.authData {
+            try PrivateFileIO.atomicWrite(data, to: paths.sharedAuthURL)
+        } else if try PrivateFileIO.exists(paths.sharedAuthURL) {
+            try fileManager.removeItem(at: paths.sharedAuthURL)
+        }
+        if let id = state.profileID { try saveMarker(id) }
+    }
+
+    /// Explicit recovery only. For failed operations, restoreCurrentState is the
+    /// exact checkpoint; the first-use original backup may be much older.
+    public func restorePreviousCredential(_ id: ProfileID?) throws {
+        if let id { try activate(id); return }
+        try paths.createSharedCodexDirectory()
+        guard isSafeCredentialFile(paths.originalSharedAuthBackupURL) else {
+            throw AccountAuthStoreError.unsafeCredentialFile
+        }
+        try clearActiveMarker()
+        try atomicOpaqueCopy(from: paths.originalSharedAuthBackupURL, to: paths.sharedAuthURL)
     }
 
     private func saveMarker(_ id: ProfileID) throws {
         let data = try JSONEncoder().encode(ActiveAuthMarker(profileID: id))
-        try data.write(to: paths.activeAuthMarkerURL, options: .atomic)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.activeAuthMarkerURL.path)
+        try paths.validatePrivatePath(paths.activeAuthMarkerURL)
+        try PrivateFileIO.atomicWrite(data, to: paths.activeAuthMarkerURL)
     }
 
-    private func isSafeCredentialFile(_ url: URL) -> Bool {
+    public func isSafeCredentialFile(_ url: URL) -> Bool {
+        do { try paths.validatePrivatePath(url) } catch { return false }
         guard let values = try? url.resourceValues(forKeys: [
             .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
         ]) else { return false }
@@ -96,21 +177,14 @@ public final class AccountAuthStore: @unchecked Sendable {
         guard isSafeCredentialFile(source) else {
             throw AccountAuthStoreError.unsafeCredentialFile
         }
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let temporary = destination.deletingLastPathComponent()
-            .appendingPathComponent(".gpt-switcher-\(UUID().uuidString).tmp")
-        defer { try? fileManager.removeItem(at: temporary) }
-        try fileManager.copyItem(at: source, to: temporary)
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        if fileManager.fileExists(atPath: destination.path) {
-            _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
+        try paths.validatePrivatePath(source)
+        try paths.validatePrivatePath(destination)
+        if destination.deletingLastPathComponent().path == paths.sharedCodexHome.path {
+            try paths.createSharedCodexDirectory()
         } else {
-            try fileManager.moveItem(at: temporary, to: destination)
+            try paths.createPrivateDirectory(destination.deletingLastPathComponent())
         }
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        let data = try PrivateFileIO.read(source)
+        try PrivateFileIO.atomicWrite(data, to: destination)
     }
 }

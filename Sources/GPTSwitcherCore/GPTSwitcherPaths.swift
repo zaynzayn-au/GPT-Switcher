@@ -39,6 +39,14 @@ public struct GPTSwitcherPaths: Sendable {
         applicationSupportRoot.appendingPathComponent("active-auth-profile.json")
     }
 
+    public var operationLockURL: URL {
+        applicationSupportRoot.appendingPathComponent("operation.lock")
+    }
+
+    public var loginSessionURL: URL {
+        applicationSupportRoot.appendingPathComponent("pending-login.json")
+    }
+
     public var migrationBackupRoot: URL {
         applicationSupportRoot.appendingPathComponent("migration-backup", isDirectory: true)
     }
@@ -72,6 +80,7 @@ public struct GPTSwitcherPaths: Sendable {
     }
 
     public func createProfileDirectories(for id: ProfileID) throws -> ProfilePaths {
+        try createSupportDirectories()
         let profile = profile(id)
         try createPrivateDirectory(profile.chatGPT)
         try createPrivateDirectory(profile.codex)
@@ -85,12 +94,48 @@ public struct GPTSwitcherPaths: Sendable {
         try createPrivateDirectory(migrationBackupRoot)
     }
 
-    private func createPrivateDirectory(_ url: URL) throws {
+    /// Creates only managed support/log directories, rejecting symlinks at every
+    /// managed path component. Permissions must be applied successfully.
+    public func createPrivateDirectory(_ url: URL) throws {
+        try validatePrivatePath(url, includeSharedHome: false)
+        let candidate = url.standardizedFileURL
+        guard let root = [applicationSupportRoot, logsRoot].first(where: {
+            candidate.path == $0.path || candidate.path.hasPrefix($0.path + "/")
+        }) else { throw PrivateFileError.unsafePath }
+        var current = root
+        var components = [root]
+        for part in candidate.path.dropFirst(root.path.count).split(separator: "/") {
+            current.appendPathComponent(String(part))
+            components.append(current)
+        }
+        for component in components {
+            try validatePrivatePath(component, includeSharedHome: false)
+            try FileManager.default.createDirectory(
+                at: component,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try validatePrivatePath(component, includeSharedHome: false)
+            try PrivateFileIO.secureDirectory(component)
+        }
+    }
+
+    public func validatePrivatePath(_ url: URL, includeSharedHome: Bool = true) throws {
+        let candidate = url.standardizedFileURL
+        let roots = [applicationSupportRoot, logsRoot] + (includeSharedHome ? [sharedCodexHome] : [])
+        guard let root = roots.first(where: {
+            candidate.path == $0.path || candidate.path.hasPrefix($0.path + "/")
+        }) else { throw PrivateFileError.unsafePath }
+        try PrivateFileIO.rejectSymlinkComponents(root: root, destination: candidate)
+    }
+
+    public func createSharedCodexDirectory() throws {
+        try validatePrivatePath(sharedCodexHome)
         try FileManager.default.createDirectory(
-            at: url,
-            withIntermediateDirectories: true,
+            at: sharedCodexHome, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        try validatePrivatePath(sharedCodexHome)
+        try PrivateFileIO.secureDirectory(sharedCodexHome)
     }
 }

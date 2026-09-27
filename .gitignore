@@ -11,6 +11,12 @@ auth.json
 active-auth-profile.json
 migration-backup/
 profiles/
+pending-login.json
+operation.lock
+browser-login-*/
+login-enrollment/
+usage-queries/
+*account-transfer*
 *.log
 
 # Editor state
